@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pronounce It Now</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #f7fafc;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            padding: 3rem 3rem;
+            width: 420px;
+            min-height: 420px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1.5rem;
+        }
+        .word {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #2d3748;
+        }
+        .feedback {
+            font-size: 1.3rem;
+            font-weight: 500;
+            min-height: 2.2rem;
+        }
+        .feedback.correcto {
+            color: #38a169;
+        }
+        .feedback.intentalo {
+            color: #e53e3e;
+        }
+        .controls {
+            display: flex;
+            gap: 1rem;
+        }
+        button {
+            padding: 1em 1.7rem;
+            font-size: 1rem;
+            border: none;
+            border-radius: 6px;
+            background: #3182ce;
+            color: #fff;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:disabled {
+            background: #a0aec0;
+            cursor: not-allowed;
+        }
+        .recording {
+            background: #e53e3e;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="word" id="word">Cargando...</div>
+        <img id="wordImage"
+             src=""
+             alt="Imagen de la palabra actual"
+             style="max-width:180px;margin:0 auto 1rem;display:block" />
+        <button id="playAudioBtn" style="background:none;border:none;padding:0;margin-bottom:1rem;display:block;cursor:pointer">
+            <img src="/static/images/play.png" alt="Reproducir audio" style="width:48px;height:48px;display:block;margin:0 auto;" />
+        </button>
+        <div class="feedback" id="feedback"></div>
+        <div class="controls">
+            <button id="recordBtn">🎤 Pronounce</button>
+            <button id="nextBtn" style="display:none;">Next Word</button>
+            <button id="repeatBtn" style="display:none;">Repeat Word</button>
+        </div>
+        <div id="nivel" style="font-size:1rem;color:#4a5568;"></div>
+    </div>
+    <script>
+        let levels = [];
+        let levelIndex = 0;   // índice del nivel actual
+        let itemIndex = 0;    // índice del item actual dentro del nivel
+      
+        let recognizing = false;
+        let recognition;
+        let audio = null;
+      
+        // Normaliza texto: minúsculas, sin signos raros, espacios compactados
+        function norm(s) {
+          return s
+            .toLowerCase()
+            .replace(/[“”]/g, '"')
+            .replace(/[‘’]/g, "'")
+            .replace(/[^a-z0-9'" ]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        }
+      
+        async function cargarNiveles() {
+          const res = await fetch('/api/levels');
+          levels = await res.json();
+          levelIndex = 0;
+          itemIndex = 0;
+          render();
+        }
+      
+        function nivelActual()  { return levels[levelIndex]; }
+        function itemActual()   { const lvl = nivelActual(); return lvl ? lvl.items[itemIndex] : null; }
+      
+        function resetBotones() {
+          const nextBtn = document.getElementById('nextBtn');
+          const repeatBtn = document.getElementById('repeatBtn');
+          nextBtn.style.display = 'none';
+          repeatBtn.style.display = 'none';
+          nextBtn.onclick = null;      // MUY IMPORTANTE: evitar handlers heredados
+          repeatBtn.onclick = null;
+        }
+      
+        function render() {
+          const lvl = nivelActual();
+          const it  = itemActual();
+      
+          const wordEl   = document.getElementById('word');
+          const imgEl    = document.getElementById('wordImage');
+          const playBtn  = document.getElementById('playAudioBtn');
+          const feedback = document.getElementById('feedback');
+          const nivelEl  = document.getElementById('nivel');
+          const recordBtn = document.getElementById('recordBtn');
+      
+          // Limpiar feedback y botones
+          feedback.textContent = '';
+          feedback.className = 'feedback';
+          resetBotones();
+      
+          // Si no hay más niveles
+          if (!lvl) {
+            wordEl.textContent = '¡Felicidades! Has completado todos los niveles.';
+            imgEl.style.display = 'none';
+            playBtn.style.display = 'none';
+            recordBtn.disabled = true;
+            nivelEl.textContent = '';
+            return;
+          }
+      
+          // Cabecera de nivel
+          nivelEl.textContent = `Nivel ${levelIndex + 1} de ${levels.length} — ${lvl.name}`;
+      
+          if (it) {
+            // Mostrar texto objetivo
+            wordEl.textContent = it.text;
+      
+            // Imagen (opcional)
+            if (it.image) {
+              imgEl.src = `/static/images/${it.image}`;
+              imgEl.style.display = 'block';
+            } else {
+              imgEl.style.display = 'none';
+            }
+      
+            // Audio (opcional)
+            if (audio) { audio.pause(); audio = null; }
+            if (it.audio) {
+              audio = new Audio(`/static/audio/${it.audio}`);
+              playBtn.style.display = 'block';
+              playBtn.disabled = false;
+            } else {
+              playBtn.style.display = 'none';
+            }
+      
+            // Habilitar reconocimiento
+            recordBtn.disabled = false;
+      
+          } else {
+            // Fin del nivel actual
+            wordEl.textContent = '¡Nivel completado!';
+            imgEl.style.display = 'none';
+            playBtn.style.display = 'none';
+            recordBtn.disabled = true;
+      
+            const nextBtn = document.getElementById('nextBtn');
+            nextBtn.textContent = 'Siguiente Nivel';
+            nextBtn.onclick = onNextLevel;     // cambia de nivel
+            nextBtn.style.display = 'inline-block';
+          }
+        }
+      
+        function mostrarFeedback(ok) {
+          const feedback = document.getElementById('feedback');
+          const nextBtn = document.getElementById('nextBtn');
+          const repeatBtn = document.getElementById('repeatBtn');
+      
+          if (ok) {
+            feedback.textContent = '¡Correcto!';
+            feedback.className = 'feedback correcto';
+      
+            nextBtn.textContent = 'Next';
+            nextBtn.onclick = onNextItem;      // avanza item
+            nextBtn.style.display = 'inline-block';
+      
+            repeatBtn.style.display = 'none';
+            repeatBtn.onclick = null;
+          } else {
+            feedback.textContent = 'Inténtalo de nuevo';
+            feedback.className = 'feedback intentalo';
+      
+            repeatBtn.style.display = 'inline-block';
+            repeatBtn.onclick = () => render();
+      
+            nextBtn.style.display = 'none';
+            nextBtn.onclick = null;
+          }
+        }
+      
+        function onNextItem() {
+          itemIndex++;
+          render();
+        }
+      
+        function onNextLevel() {
+          levelIndex++;
+          itemIndex = 0;
+          render();
+        }
+      
+        function iniciarReconocimiento() {
+          if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+            alert('Tu navegador no soporta reconocimiento de voz. Usa Chrome o Edge.');
+            return;
+          }
+          recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+          recognition.lang = 'en-US';
+          recognition.interimResults = false;
+          recognition.maxAlternatives = 1;
+      
+          recognition.onstart = () => {
+            recognizing = true;
+            document.getElementById('recordBtn').classList.add('recording');
+            const fb = document.getElementById('feedback');
+            fb.textContent = 'Escuchando...';
+            fb.className = 'feedback';
+          };
+      
+          recognition.onend = () => {
+            recognizing = false;
+            document.getElementById('recordBtn').classList.remove('recording');
+          };
+      
+          recognition.onerror = () => {
+            recognizing = false;
+            document.getElementById('recordBtn').classList.remove('recording');
+            const fb = document.getElementById('feedback');
+            fb.textContent = 'Error de micrófono o reconocimiento.';
+            fb.className = 'feedback intentalo';
+          };
+      
+          recognition.onresult = (event) => {
+            const dicho = norm(event.results[0][0].transcript);
+            const it = itemActual();
+            if (!it) return;
+            const esperado = norm(it.text);
+      
+            // Igualdad normalizada (simple y clara)
+            const ok = (dicho === esperado);
+            mostrarFeedback(ok);
+          };
+      
+          recognition.start();
+        }
+      
+        // Listeners fijos (el handler de Next se reconfigura dentro de mostrarFeedback/render)
+        document.getElementById('recordBtn').onclick = () => {
+          if (!recognizing) iniciarReconocimiento();
+        };
+      
+        document.getElementById('nextBtn').onclick = null;   // se asigna dinámicamente
+        document.getElementById('repeatBtn').onclick = () => render();
+      
+        document.getElementById('playAudioBtn').onclick = function() {
+          if (audio) {
+            audio.currentTime = 0;
+            audio.play();
+          }
+        };
+      
+        cargarNiveles();
+      </script>      
+</body>
+</html> 
